@@ -1,4 +1,12 @@
-# cursor-claw
+<div align="center">
+  <h1>cursor-claw</h1>
+  <p>
+    <a href="https://pypi.org/project/cursor-claw/"><img src="https://img.shields.io/pypi/v/cursor-claw" alt="PyPI"></a>
+    <a href="https://pypi.org/project/cursor-claw/"><img src="https://img.shields.io/pypi/dm/cursor-claw" alt="Downloads"></a>
+    <img src="https://img.shields.io/badge/python-≥3.10-blue" alt="Python">
+    <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+  </p>
+</div>
 
 Turn your [Cursor](https://www.cursor.com/) editor into a multi-channel AI coding agent. cursor-claw bridges Mattermost, Telegram, and QQ to the Cursor Agent CLI — each chat thread gets its own persistent session so the agent remembers context across messages.
 
@@ -236,3 +244,15 @@ cursorclaw run              # Alias for start
 ## License
 
 MIT
+
+---
+
+<div align="center">
+  <a href="https://star-history.com/#wenmin-wu/cursor-claw&Date">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=wenmin-wu/cursor-claw&type=Date&theme=dark" />
+      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=wenmin-wu/cursor-claw&type=Date" />
+      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=wenmin-wu/cursor-claw&type=Date" />
+    </picture>
+  </a>
+</div>
