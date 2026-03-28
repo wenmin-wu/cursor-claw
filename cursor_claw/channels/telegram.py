@@ -1,0 +1,256 @@
+"""Telegram channel for cursor-claw using python-telegram-bot."""
+
+from __future__ import annotations
+
+import asyncio
+import re
+
+from loguru import logger
+
+from cursor_claw.channels.base import BaseChannel
+from cursor_claw.config import Settings
+
+try:
+    from telegram import BotCommand, Update
+    from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+    from telegram.request import HTTPXRequest
+
+    TELEGRAM_AVAILABLE = True
+except ImportError:
+    TELEGRAM_AVAILABLE = False
+
+
+def _md_to_html(text: str) -> str:
+    """Convert basic markdown to Telegram HTML (safe subset)."""
+    if not text:
+        return ""
+
+    code_blocks: list[str] = []
+
+    def _save_block(m: re.Match) -> str:
+        code_blocks.append(m.group(1))
+        return f"\x00CB{len(code_blocks) - 1}\x00"
+
+    inline_codes: list[str] = []
+
+    def _save_inline(m: re.Match) -> str:
+        inline_codes.append(m.group(1))
+        return f"\x00IC{len(inline_codes) - 1}\x00"
+
+    text = re.sub(r"```[\w]*\n?([\s\S]*?)```", _save_block, text)
+    text = re.sub(r"`([^`]+)`", _save_inline, text)
+    text = re.sub(r"^#{1,6}\s+(.+)$", r"\1", text, flags=re.MULTILINE)
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    text = re.sub(r"__(.+?)__", r"<b>\1</b>", text)
+    text = re.sub(r"(?<![a-zA-Z0-9])_([^_]+)_(?![a-zA-Z0-9])", r"<i>\1</i>", text)
+    text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text)
+    text = re.sub(r"^[-*]\s+", "• ", text, flags=re.MULTILINE)
+
+    for i, code in enumerate(inline_codes):
+        esc = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        text = text.replace(f"\x00IC{i}\x00", f"<code>{esc}</code>")
+    for i, code in enumerate(code_blocks):
+        esc = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        text = text.replace(f"\x00CB{i}\x00", f"<pre><code>{esc}</code></pre>")
+
+    return text
+
+
+def _split(text: str, max_len: int = 4000) -> list[str]:
+    if len(text) <= max_len:
+        return [text]
+    chunks: list[str] = []
+    while text:
+        if len(text) <= max_len:
+            chunks.append(text)
+            break
+        cut = text[:max_len]
+        pos = cut.rfind("\n")
+        if pos == -1:
+            pos = cut.rfind(" ")
+        if pos == -1:
+            pos = max_len
+        chunks.append(text[:pos])
+        text = text[pos:].lstrip()
+    return chunks
+
+
+class TelegramChannel(BaseChannel):
+    """Telegram channel using long polling (no public IP needed)."""
+
+    name = "telegram"
+
+    BOT_COMMANDS = [
+        ("start", "Start the bot"),
+        ("new", "Start a new conversation"),
+        ("help", "Show available commands"),
+    ]
+
+    def __init__(self, settings: Settings) -> None:
+        super().__init__(settings)
+        self.cfg = settings.channels.telegram
+        self._app: "Application | None" = None
+
+    async def start(self) -> None:
+        if not TELEGRAM_AVAILABLE:
+            logger.error(
+                "python-telegram-bot is not installed. "
+                "Run: pip install 'cursor-claw[telegram]'"
+            )
+            return
+
+        if not self.cfg.token:
+            logger.error("Telegram token not configured")
+            return
+
+        self._running = True
+
+        req = HTTPXRequest(
+            connection_pool_size=16,
+            pool_timeout=5.0,
+            connect_timeout=30.0,
+            read_timeout=30.0,
+        )
+        builder = (
+            Application.builder().token(self.cfg.token).request(req).get_updates_request(req)
+        )
+        if self.cfg.proxy:
+            builder = builder.proxy(self.cfg.proxy).get_updates_proxy(self.cfg.proxy)
+
+        self._app = builder.build()
+        self._app.add_error_handler(self._on_error)
+        self._app.add_handler(CommandHandler("start", self._on_start))
+        self._app.add_handler(CommandHandler("new", self._on_new))
+        self._app.add_handler(CommandHandler("help", self._on_help))
+        self._app.add_handler(
+            MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
+        )
+
+        await self._app.initialize()
+        await self._app.start()
+
+        bot_info = await self._app.bot.get_me()
+        logger.info("Telegram bot @{} connected", bot_info.username)
+
+        try:
+            await self._app.bot.set_my_commands(
+                [BotCommand(cmd, desc) for cmd, desc in self.BOT_COMMANDS]
+            )
+        except Exception as e:
+            logger.warning("Telegram command registration failed: {}", e)
+
+        await self._app.updater.start_polling(
+            allowed_updates=["message"],
+            drop_pending_updates=True,
+        )
+
+        while self._running:
+            await asyncio.sleep(1)
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._app:
+            logger.info("Stopping Telegram bot...")
+            await self._app.updater.stop()
+            await self._app.stop()
+            await self._app.shutdown()
+            self._app = None
+
+    # ------------------------------------------------------------------
+    # Command handlers
+    # ------------------------------------------------------------------
+
+    async def _on_start(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
+        if not update.message or not update.effective_user:
+            return
+        await update.message.reply_text(
+            f"Hi {update.effective_user.first_name}! I'm cursor-claw, your AI coding agent.\n\n"
+            "Send me a message and I'll get to work.\n"
+            "/help for commands."
+        )
+
+    async def _on_new(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
+        """Clear session so the next message starts a fresh conversation."""
+        if not update.message or not update.effective_user:
+            return
+        session_key = self._session_key(str(update.message.chat_id))
+        self.store.delete("cursor:chat_ids", session_key)
+        await update.message.reply_text("Started a new conversation.")
+
+    async def _on_help(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
+        if not update.message:
+            return
+        await update.message.reply_text(
+            "cursor-claw commands:\n"
+            "/new — Start a new conversation\n"
+            "/help — Show this message"
+        )
+
+    # ------------------------------------------------------------------
+    # Message handler
+    # ------------------------------------------------------------------
+
+    async def _on_message(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
+        if not update.message or not update.effective_user:
+            return
+
+        user = update.effective_user
+        chat_id = str(update.message.chat_id)
+        sender_id = f"{user.id}|{user.username}" if user.username else str(user.id)
+        text = (update.message.text or "").strip()
+
+        if not text:
+            return
+
+        if not self.is_allowed(sender_id, self.cfg.allow_from):
+            logger.warning("Telegram access denied for {}", sender_id)
+            return
+
+        session_key = self._session_key(chat_id)
+        msg_id = update.message.message_id
+        logger.info("Telegram message from {} chat={} len={}", sender_id, chat_id, len(text))
+
+        async def _flush(chunk: str) -> None:
+            await self._send_text(int(chat_id), chunk)
+
+        async def _error(msg: str) -> None:
+            await self._send_text(int(chat_id), msg)
+
+        asyncio.create_task(
+            self._run_turn_safe(
+                session_key=session_key,
+                prompt_text=text,
+                on_flush=_flush,
+                on_error=_error,
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # Send helpers
+    # ------------------------------------------------------------------
+
+    async def _send_text(self, chat_id: int, text: str) -> None:
+        if not self._app:
+            return
+        max_chars = self.cfg.max_message_chars
+        for chunk in _split(text, max_chars):
+            try:
+                html = _md_to_html(chunk)
+                await self._app.bot.send_message(chat_id=chat_id, text=html, parse_mode="HTML")
+            except Exception:
+                try:
+                    await self._app.bot.send_message(chat_id=chat_id, text=chunk)
+                except Exception as e:
+                    logger.error("Telegram send failed: {}", e)
+
+    async def _on_error(self, update: object, context: "ContextTypes.DEFAULT_TYPE") -> None:
+        logger.error("Telegram error: {}", context.error)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _session_key(self, chat_id: str) -> str:
+        return f"telegram:{chat_id}"

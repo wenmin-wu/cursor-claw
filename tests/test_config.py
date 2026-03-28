@@ -19,36 +19,64 @@ def test_cursorclaw_home_uses_dot_cursorclaw(monkeypatch: pytest.MonkeyPatch, tm
     assert cursorclaw_home() == tmp_path / ".cursorclaw"
 
 
-def test_load_settings_merges_json_and_expands_tilde(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_load_settings_new_format(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """New nested channels format is parsed correctly."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     home = cursorclaw_home()
     home.mkdir(parents=True, exist_ok=True)
-    cfg = home / "config.json"
     deep = tmp_path / "ws"
     deep.mkdir()
+    cfg = home / "config.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "workspace": str(deep),
+                "chunk_timeout_sec": 60.0,
+                "channels": {
+                    "mattermost": {
+                        "enabled": True,
+                        "base_url": "http://mm.example",
+                        "bot_token": "tok",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    s = load_settings()
+    assert s.channels.mattermost.base_url == "http://mm.example"
+    assert s.channels.mattermost.bot_token == "tok"
+    assert s.channels.mattermost.enabled is True
+    assert s.workspace == deep
+    assert s.chunk_timeout_sec == 60.0
+    assert s.turn_timeout_sec == 1800.0
+
+
+def test_load_settings_migrates_flat_format(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Old flat config keys are migrated to the nested channels structure."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    home = cursorclaw_home()
+    home.mkdir(parents=True, exist_ok=True)
+    deep = tmp_path / "ws"
+    deep.mkdir()
+    cfg = home / "config.json"
     cfg.write_text(
         json.dumps(
             {
                 "mattermost_base_url": "http://mm.example",
                 "mattermost_bot_token": "tok",
                 "workspace": str(deep),
-                "agent_command": "agent",
-                "state_db": "~/.cursorclaw/state.db",
                 "chunk_timeout_sec": 60.0,
             }
         ),
         encoding="utf-8",
     )
     s = load_settings()
-    assert s.mattermost_base_url == "http://mm.example"
-    assert s.mattermost_bot_token == "tok"
+    assert s.channels.mattermost.base_url == "http://mm.example"
+    assert s.channels.mattermost.bot_token == "tok"
     assert s.workspace == deep
-    assert s.state_db == home / "state.db"
-    assert s.chunk_timeout_sec == 60.0
-    assert s.turn_timeout_sec == 1800.0
 
 
 def test_write_default_config_file_creates_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -59,12 +87,16 @@ def test_write_default_config_file_creates_json(monkeypatch: pytest.MonkeyPatch,
     path = write_default_config_file(overwrite=False)
     assert path.exists()
     data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["mattermost_base_url"] == ""
-    assert "state_db" in data
+    assert "channels" in data
+    assert "mattermost" in data["channels"]
+    assert data["channels"]["mattermost"]["bot_token"] == ""
     assert Path(data["state_db"]) == home / "state.db"
 
 
-def test_default_config_document_is_stable_subset() -> None:
+def test_default_config_document_has_all_channels() -> None:
     doc = default_config_document()
-    assert "mattermost_verify" in doc
-    assert isinstance(doc["onchar_prefixes"], list)
+    assert "channels" in doc
+    assert "mattermost" in doc["channels"]
+    assert "telegram" in doc["channels"]
+    assert "qq" in doc["channels"]
+    assert isinstance(doc["channels"]["mattermost"]["onchar_prefixes"], list)

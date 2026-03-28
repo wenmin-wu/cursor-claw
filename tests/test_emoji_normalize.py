@@ -1,14 +1,14 @@
 """Mattermost reaction emoji_name normalization."""
 
-from cursor_claw.app import normalize_mattermost_emoji_name
+from cursor_claw.channels.mattermost import _normalize_emoji
 
 
 def test_strip_colons() -> None:
-    assert normalize_mattermost_emoji_name(":eyes:") == "eyes"
-    assert normalize_mattermost_emoji_name("eyes") == "eyes"
-    assert normalize_mattermost_emoji_name("  :+1:  ") == "+1"
+    assert _normalize_emoji(":eyes:") == "eyes"
+    assert _normalize_emoji("eyes") == "eyes"
+    assert _normalize_emoji("  :+1:  ") == "+1"
 
 
 def test_empty_defaults_to_eyes() -> None:
-    assert normalize_mattermost_emoji_name("") == "eyes"
-    assert normalize_mattermost_emoji_name("   :::  ") == "eyes"
+    assert _normalize_emoji("") == "eyes"
+    assert _normalize_emoji("   :::  ") == "eyes"

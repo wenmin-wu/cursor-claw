@@ -58,3 +58,12 @@ class StateStore:
                     (namespace, key, value, now),
                 )
                 conn.commit()
+
+    def delete(self, namespace: str, key: str) -> None:
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    "DELETE FROM state WHERE namespace = ? AND key = ?",
+                    (namespace, key),
+                )
+                conn.commit()

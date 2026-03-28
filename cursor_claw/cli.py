@@ -19,6 +19,15 @@ def _start_bot() -> None:
     if not settings.workspace.exists():
         logger.error("workspace does not exist: {}", settings.workspace)
         raise typer.Exit(1)
+
+    ch = settings.channels
+    if not any([ch.mattermost.enabled, ch.telegram.enabled, ch.qq.enabled]):
+        logger.error(
+            "No channels are enabled. "
+            "Edit ~/.cursorclaw/config.json and set at least one channel to enabled=true."
+        )
+        raise typer.Exit(1)
+
     try:
         asyncio.run(run_bot(settings))
     except KeyboardInterrupt:
@@ -56,7 +65,7 @@ def init_cmd(
 
 @app.command("start")
 def start_cmd() -> None:
-    """Connect to Mattermost and handle messages until interrupted."""
+    """Connect to all enabled channels and handle messages until interrupted."""
     _start_bot()
 
 
