@@ -92,6 +92,7 @@ class TelegramChannel(BaseChannel):
         super().__init__(settings)
         self.cfg = settings.channels.telegram
         self._app: "Application | None" = None
+        self._typing_tasks: dict[str, asyncio.Task] = {}
 
     async def start(self) -> None:
         if not TELEGRAM_AVAILABLE:
@@ -151,6 +152,9 @@ class TelegramChannel(BaseChannel):
 
     async def stop(self) -> None:
         self._running = False
+        for task in self._typing_tasks.values():
+            task.cancel()
+        self._typing_tasks.clear()
         if self._app:
             logger.info("Stopping Telegram bot...")
             await self._app.updater.stop()
@@ -200,6 +204,7 @@ class TelegramChannel(BaseChannel):
         chat_id = str(update.message.chat_id)
         sender_id = f"{user.id}|{user.username}" if user.username else str(user.id)
         text = (update.message.text or "").strip()
+        message_id = update.message.message_id
 
         if not text:
             return
@@ -209,23 +214,64 @@ class TelegramChannel(BaseChannel):
             return
 
         session_key = self._session_key(chat_id)
-        msg_id = update.message.message_id
         logger.info("Telegram message from {} chat={} len={}", sender_id, chat_id, len(text))
 
-        async def _flush(chunk: str) -> None:
-            await self._send_text(int(chat_id), chunk)
+        async def _run() -> None:
+            await self._react(int(chat_id), message_id, "👀")
+            self._start_typing(chat_id)
+            try:
+                await self._run_turn_safe(
+                    session_key=session_key,
+                    prompt_text=text,
+                    on_flush=lambda chunk: self._send_text(int(chat_id), chunk),
+                    on_error=lambda msg: self._send_text(int(chat_id), msg),
+                )
+            finally:
+                self._stop_typing(chat_id)
+                await self._react(int(chat_id), message_id, "✅")
 
-        async def _error(msg: str) -> None:
-            await self._send_text(int(chat_id), msg)
+        asyncio.create_task(_run())
 
-        asyncio.create_task(
-            self._run_turn_safe(
-                session_key=session_key,
-                prompt_text=text,
-                on_flush=_flush,
-                on_error=_error,
+    # ------------------------------------------------------------------
+    # Typing indicator
+    # ------------------------------------------------------------------
+
+    def _start_typing(self, chat_id: str) -> None:
+        self._stop_typing(chat_id)
+        self._typing_tasks[chat_id] = asyncio.create_task(self._typing_loop(chat_id))
+
+    def _stop_typing(self, chat_id: str) -> None:
+        task = self._typing_tasks.pop(chat_id, None)
+        if task and not task.done():
+            task.cancel()
+
+    async def _typing_loop(self, chat_id: str) -> None:
+        try:
+            while self._app:
+                await self._app.bot.send_chat_action(chat_id=int(chat_id), action="typing")
+                await asyncio.sleep(4)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug("Typing indicator stopped for {}: {}", chat_id, e)
+
+    # ------------------------------------------------------------------
+    # Emoji reaction
+    # ------------------------------------------------------------------
+
+    async def _react(self, chat_id: int, message_id: int, emoji: str) -> None:
+        """Add an emoji reaction to a message (Bot API 7.0+, best-effort)."""
+        if not self._app:
+            return
+        try:
+            from telegram import ReactionTypeEmoji
+            await self._app.bot.set_message_reaction(
+                chat_id=chat_id,
+                message_id=message_id,
+                reaction=[ReactionTypeEmoji(emoji)],
             )
-        )
+        except Exception as e:
+            logger.debug("Telegram reaction failed ({}): {}", emoji, e)
 
     # ------------------------------------------------------------------
     # Send helpers
