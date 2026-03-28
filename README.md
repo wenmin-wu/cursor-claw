@@ -54,7 +54,7 @@ Edit these files to customise how your agent behaves.
 
 ### 3. Configure the Bot
 
-Edit `~/.cursorclaw/config.json`:
+Edit `~/.cursorclaw/config.json`. The minimum required fields are:
 
 ```json
 {
@@ -62,14 +62,6 @@ Edit `~/.cursorclaw/config.json`:
   "mattermost_bot_token": "your-bot-token-here",
   "workspace": "/path/to/your/code/repo"
 }
-```
-
-All settings can also be overridden via environment variables prefixed with `CURSOR_CLAW_`:
-
-```bash
-export CURSOR_CLAW_MATTERMOST_BASE_URL=https://your-mattermost.example.com
-export CURSOR_CLAW_MATTERMOST_BOT_TOKEN=your-bot-token-here
-export CURSOR_CLAW_WORKSPACE=/path/to/your/code/repo
 ```
 
 ### 4. Start the Bot
@@ -82,24 +74,89 @@ The bot connects to Mattermost via WebSocket and is ready to receive messages.
 
 ## Configuration Reference
 
+Config file: `~/.cursorclaw/config.json`
+
+### Connection
+
+```json
+{
+  "mattermost_base_url": "https://mattermost.example.com",
+  "mattermost_bot_token": "your-bot-token",
+  "mattermost_verify": true
+}
+```
+
 | Key | Default | Description |
 |---|---|---|
-| `mattermost_base_url` | `""` | Mattermost server URL, e.g. `https://mattermost.example.com` |
+| `mattermost_base_url` | `""` | Mattermost server URL |
 | `mattermost_bot_token` | `""` | Bot account token |
 | `mattermost_verify` | `true` | Verify TLS certificates |
+
+### Agent
+
+```json
+{
+  "workspace": "/path/to/your/repo",
+  "agent_command": "agent"
+}
+```
+
+| Key | Default | Description |
+|---|---|---|
 | `workspace` | `"."` | Path to the code repo passed to `agent --workspace` |
 | `agent_command` | `"agent"` | Cursor agent executable name or path |
-| `state_db` | `~/.cursorclaw/state.db` | SQLite file for session continuity |
-| `chatmode` | `"oncall"` | When to respond: `oncall` (on @mention), `onmessage` (every message), `onchar` (on prefix) |
-| `onchar_prefixes` | `[">"]` | Trigger prefixes when `chatmode` is `onchar` |
+
+### Chat Behaviour
+
+```json
+{
+  "chatmode": "oncall",
+  "onchar_prefixes": [">"],
+  "reply_in_thread": true,
+  "react_emoji": "eyes",
+  "max_post_chars": 15000
+}
+```
+
+| Key | Default | Description |
+|---|---|---|
+| `chatmode` | `"oncall"` | When to respond: `oncall` (@mention only), `onmessage` (every message), `onchar` (prefix trigger) |
+| `onchar_prefixes` | `[">"]` | Trigger prefixes when `chatmode` is `"onchar"` |
+| `reply_in_thread` | `true` | Post replies in the same Mattermost thread |
+| `react_emoji` | `"eyes"` | Emoji added to the trigger post while the agent is running |
+| `max_post_chars` | `15000` | Max characters per post; long replies are split automatically |
+
+### Access Control
+
+```json
+{
+  "dm_enabled": true,
+  "dm_allow_from": ["user_id_1", "user_id_2"],
+  "group_policy": "open",
+  "group_allow_from": []
+}
+```
+
+| Key | Default | Description |
+|---|---|---|
 | `dm_enabled` | `true` | Allow direct messages |
 | `dm_allow_from` | `[]` | Mattermost user IDs allowed to DM (empty = anyone) |
-| `group_policy` | `"open"` | Channel policy: `open` (all channels) or `allowlist` |
-| `group_allow_from` | `[]` | Channel IDs allowed when `group_policy` is `allowlist` |
-| `react_emoji` | `"eyes"` | Emoji reacted to the trigger post while the agent is running |
-| `reply_in_thread` | `true` | Post replies in the same thread as the trigger |
-| `max_post_chars` | `15000` | Maximum characters per Mattermost post (long replies are split) |
-| `chunk_timeout_sec` | `300` | Seconds to wait for the next agent output chunk before killing |
+| `group_policy` | `"open"` | Channel policy: `"open"` (all channels) or `"allowlist"` |
+| `group_allow_from` | `[]` | Channel IDs allowed when `group_policy` is `"allowlist"` |
+
+### Timeouts
+
+```json
+{
+  "chunk_timeout_sec": 300,
+  "turn_timeout_sec": 1800,
+  "outer_timeout_sec": 1800
+}
+```
+
+| Key | Default | Description |
+|---|---|---|
+| `chunk_timeout_sec` | `300` | Seconds without agent output before killing the subprocess |
 | `turn_timeout_sec` | `1800` | Maximum seconds for a single agent turn |
 | `outer_timeout_sec` | `1800` | Hard outer timeout for the whole async task |
 
