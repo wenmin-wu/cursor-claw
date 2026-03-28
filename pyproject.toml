@@ -2,6 +2,9 @@
 name = "cursor-claw"
 version = "0.1.0"
 description = "Turn your Cursor into an openclaw-like Mattermost agent — cursor-claw bridges Mattermost to the Cursor Agent CLI per thread."
+authors = [
+    { name = "wenmin-wu", email = "wuwenmin1991@gmail.com" },
+]
 requires-python = ">=3.11"
 dependencies = [
     "loguru>=0.7.3,<1.0.0",
