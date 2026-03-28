@@ -5,8 +5,16 @@ Turn your [Cursor](https://www.cursor.com/) editor into an [openclaw](https://gi
 ## Requirements
 
 - Python 3.10+
-- [Cursor](https://www.cursor.com/) with the `agent` CLI available in your `PATH`
+- Cursor `agent` CLI (see below)
 - A Mattermost server with a bot account and token
+
+### Install the Cursor Agent CLI
+
+```bash
+curl https://cursor.com/install -fsS | bash
+```
+
+This installs the `agent` binary and makes it available in your `PATH`.
 
 ## Installation
 
