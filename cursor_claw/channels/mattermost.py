@@ -12,6 +12,7 @@ from mattermostautodriver import AsyncDriver
 
 from cursor_claw.channels.base import BaseChannel
 from cursor_claw.config import MattermostChannelConfig, Settings
+from cursor_claw.media import append_attachments, cleanup_temp_dir, download_url, make_temp_dir
 
 
 def _normalize_emoji(name: str) -> str:
@@ -50,6 +51,8 @@ class MattermostChannel(BaseChannel):
         self._bot_user_id: str | None = None
         self._bot_username: str | None = None
         self._bot_threads: set[str] = set()
+        self._active_channel_id: str | None = None
+        self._active_root_id: str | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -180,15 +183,57 @@ class MattermostChannel(BaseChannel):
         if raw_root_id:
             self._bot_threads.add(thread_mm)
 
+        # Collect image file IDs and their metadata from the post
+        file_ids: list[str] = post.get("file_ids") or []
+        file_meta: dict[str, dict] = {}
+        for f in (post.get("metadata") or {}).get("files") or []:
+            if isinstance(f, dict) and f.get("id"):
+                file_meta[f["id"]] = f
+
         logger.info(
-            "Mattermost post → agent post_id={} channel={} root_id={}",
+            "Mattermost post → agent post_id={} channel={} root_id={} files={}",
             post_id,
             chat_id,
             root_id,
+            len(file_ids),
         )
         asyncio.create_task(
-            self._handle_turn(thread_key, chat_id, root_id, text, post_id)
+            self._handle_turn(thread_key, chat_id, root_id, text, post_id, file_ids, file_meta)
         )
+
+    def _set_active_thread(self, channel_id: str, root_id: str) -> None:
+        self._active_channel_id = channel_id
+        self._active_root_id = root_id
+
+    async def send_image(self, path: "Path") -> None:  # type: ignore[override]
+        """Upload an image file to Mattermost and post it in the active thread."""
+        from pathlib import Path as _Path
+
+        channel_id = getattr(self, "_active_channel_id", None)
+        root_id = getattr(self, "_active_root_id", None)
+        if not channel_id or not self._driver:
+            logger.warning("Mattermost send_image: no active channel, dropping {}", path)
+            return
+        try:
+            filename = _Path(path).name
+            with open(path, "rb") as f:
+                data = f.read()
+            resp = await self._driver.files.upload_file(
+                channel_id=channel_id,
+                files={"files": (filename, data, "image/png")},
+            )
+            fid = resp["file_infos"][0]["id"]
+            body: dict[str, Any] = {
+                "channel_id": channel_id,
+                "message": "",
+                "file_ids": [fid],
+            }
+            if self.cfg.reply_in_thread and root_id:
+                body["root_id"] = root_id
+            await self._driver.posts.create_post(options=body)
+            logger.info("Mattermost image sent channel={} path={}", channel_id, path)
+        except Exception as e:
+            logger.error("Mattermost send_image failed {}: {}", path, e)
 
     async def _handle_turn(
         self,
@@ -197,10 +242,21 @@ class MattermostChannel(BaseChannel):
         root_id: str,
         prompt: str,
         trigger_post_id: str,
+        file_ids: list[str] | None = None,
+        file_meta: dict[str, dict] | None = None,
     ) -> None:
+        self._set_active_thread(channel_id, root_id)
         await self._add_reaction(trigger_post_id)
         self._bot_threads.add(thread_key)
+        temp_dir = None
         try:
+            if file_ids:
+                paths = await self._download_files(file_ids, file_meta or {})
+                if paths:
+                    temp_dir = paths[0].parent
+                    prompt = append_attachments(prompt, paths)
+                    logger.info("Mattermost attachments count={} dir={}", len(paths), temp_dir)
+
             await self._run_turn_safe(
                 session_key=thread_key,
                 prompt_text=prompt,
@@ -209,6 +265,38 @@ class MattermostChannel(BaseChannel):
             )
         finally:
             await self._remove_reaction(trigger_post_id)
+            cleanup_temp_dir(temp_dir)
+
+    async def _download_files(
+        self,
+        file_ids: list[str],
+        file_meta: dict[str, dict],
+    ) -> list:
+        """Download image attachments from Mattermost to a temp dir."""
+        from pathlib import Path
+
+        temp_dir = make_temp_dir()
+        paths: list[Path] = []
+        base_url = self.cfg.base_url.rstrip("/")
+        headers = {"Authorization": f"Bearer {self.cfg.bot_token}"}
+
+        for fid in file_ids:
+            meta = file_meta.get(fid, {})
+            mime = meta.get("mime_type", "")
+            if mime and not mime.startswith("image/"):
+                continue  # skip non-images
+            ext = meta.get("extension") or "bin"
+            dest = temp_dir / f"attachment_{len(paths)}.{ext}"
+            url = f"{base_url}/api/v4/files/{fid}"
+            try:
+                await download_url(url, dest, headers=headers)
+                paths.append(dest)
+            except Exception as e:
+                logger.warning("Mattermost file download failed id={}: {}", fid, e)
+
+        if not paths:
+            cleanup_temp_dir(temp_dir)
+        return paths
 
     # ------------------------------------------------------------------
     # Mattermost API helpers

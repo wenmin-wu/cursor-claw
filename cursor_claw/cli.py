@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 
 import typer
 from loguru import logger
@@ -76,6 +77,8 @@ def run_cmd() -> None:
 
 
 def main() -> None:
+    logger.remove()
+    logger.add(sys.stderr, level="INFO")
     app()
 
 

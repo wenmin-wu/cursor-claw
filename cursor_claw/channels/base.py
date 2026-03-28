@@ -10,6 +10,7 @@ from loguru import logger
 
 from cursor_claw.agent_runner import run_agent_turn
 from cursor_claw.config import Settings, cursorclaw_workspace
+from cursor_claw.media import extract_send_images
 from cursor_claw.prompt import build_prompt
 from cursor_claw.store import StateStore
 
@@ -85,6 +86,10 @@ class BaseChannel:
     # Agent turn
     # ------------------------------------------------------------------
 
+    async def send_image(self, path: "Path") -> None:  # noqa: F821
+        """Send a local image file back to the user.  Override in each channel."""
+        logger.warning("{}: send_image not implemented, dropping {}", self.name, path)
+
     async def _run_turn_safe(
         self,
         *,
@@ -92,20 +97,35 @@ class BaseChannel:
         prompt_text: str,
         on_flush: Callable[[str], Awaitable[None]],
         on_error: Callable[[str], Awaitable[None]],
+        on_image: "Callable[[Path], Awaitable[None]] | None" = None,  # noqa: F821
     ) -> None:
         """
         Acquire per-thread lock and run one full agent turn.
 
         Calls `on_flush(chunk)` for each text chunk produced by the agent,
-        and `on_error(msg)` on timeout or exception.
+        strips ``[SEND_IMAGE: /path]`` markers and routes them to `on_image`
+        (defaults to `self.send_image`), and calls `on_error(msg)` on failure.
         """
+        _image_cb = on_image or self.send_image
+
+        async def _intercepting_flush(chunk: str) -> None:
+            clean, paths = extract_send_images(chunk)
+            for p in paths:
+                logger.info("{}: SEND_IMAGE detected path={}", self.name, p)
+                try:
+                    await _image_cb(p)
+                except Exception as e:
+                    logger.error("{}: send_image failed {}: {}", self.name, p, e)
+            if clean:
+                await on_flush(clean)
+
         lock = self._thread_lock(session_key)
         async with lock:
             try:
                 await self._execute_turn(
                     session_key=session_key,
                     prompt_text=prompt_text,
-                    on_flush=on_flush,
+                    on_flush=_intercepting_flush,
                     on_error=on_error,
                 )
             except Exception:

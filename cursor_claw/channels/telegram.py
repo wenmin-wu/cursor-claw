@@ -10,6 +10,7 @@ from loguru import logger
 
 from cursor_claw.channels.base import BaseChannel
 from cursor_claw.config import Settings
+from cursor_claw.media import append_attachments, cleanup_temp_dir, make_temp_dir
 
 try:
     from telegram import BotCommand, Update
@@ -94,6 +95,7 @@ class TelegramChannel(BaseChannel):
         self.cfg = settings.channels.telegram
         self._app: "Application | None" = None
         self._typing_tasks: dict[str, asyncio.Task] = {}
+        self._active_chat_id: str | None = None
 
     async def start(self) -> None:
         if not TELEGRAM_AVAILABLE:
@@ -127,7 +129,10 @@ class TelegramChannel(BaseChannel):
         self._app.add_handler(CommandHandler("new", self._on_new))
         self._app.add_handler(CommandHandler("help", self._on_help))
         self._app.add_handler(
-            MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
+            MessageHandler(
+                (filters.TEXT | filters.PHOTO | filters.Document.IMAGE) & ~filters.COMMAND,
+                self._on_message,
+            )
         )
 
         await self._app.initialize()
@@ -204,34 +209,94 @@ class TelegramChannel(BaseChannel):
         user = update.effective_user
         chat_id = str(update.message.chat_id)
         sender_id = f"{user.id}|{user.username}" if user.username else str(user.id)
-        text = (update.message.text or "").strip()
+        # caption covers text that arrives alongside a photo
+        text = (update.message.text or update.message.caption or "").strip()
         message_id = update.message.message_id
-
-        if not text:
-            return
 
         if not self.is_allowed(sender_id, self.cfg.allow_from):
             logger.warning("Telegram access denied for {}", sender_id)
             return
 
         session_key = self._session_key(chat_id)
-        logger.info("Telegram message from {} chat={} len={}", sender_id, chat_id, len(text))
 
         async def _run() -> None:
-            await self._react(int(chat_id), message_id, "👀")
-            self._start_typing(chat_id)
+            self._active_chat_id = chat_id  # expose for send_image()
+            prompt = text
+            temp_dir = None
             try:
-                await self._run_turn_safe(
-                    session_key=session_key,
-                    prompt_text=text,
-                    on_flush=lambda chunk: self._send_with_streaming(int(chat_id), chunk),
-                    on_error=lambda msg: self._send_text(int(chat_id), msg),
+                # Download any attached images to a temp dir
+                attachments = await self._download_attachments(update)
+                if attachments:
+                    temp_dir = attachments[0].parent
+                    prompt = append_attachments(prompt, attachments)
+                    logger.info(
+                        "Telegram attachments downloaded count={} dir={}",
+                        len(attachments),
+                        temp_dir,
+                    )
+
+                if not prompt:
+                    return
+
+                logger.info(
+                    "Telegram message from {} chat={} len={} images={}",
+                    sender_id, chat_id, len(text), len(attachments),
                 )
+                await self._react(int(chat_id), message_id, "👀")
+                self._start_typing(chat_id)
+                try:
+                    await self._run_turn_safe(
+                        session_key=session_key,
+                        prompt_text=prompt,
+                        on_flush=lambda chunk: self._send_with_streaming(int(chat_id), chunk),
+                        on_error=lambda msg: self._send_text(int(chat_id), msg),
+                    )
+                finally:
+                    self._stop_typing(chat_id)
+                    # Always clear 👀 first; then best-effort add ✅
+                    await self._clear_react(int(chat_id), message_id)
+                    await self._react(int(chat_id), message_id, "✅")
             finally:
-                self._stop_typing(chat_id)
-                await self._react(int(chat_id), message_id, "✅")
+                cleanup_temp_dir(temp_dir)
 
         asyncio.create_task(_run())
+
+    async def _download_attachments(self, update: "Update") -> list:
+        """Download photos / image documents from a Telegram message to a temp dir."""
+        from pathlib import Path
+
+        msg = update.message
+        if not msg or not self._app:
+            return []
+
+        items: list[Path] = []
+        temp_dir: Path | None = None
+
+        try:
+            # Photos: pick the highest-resolution variant
+            if msg.photo:
+                if temp_dir is None:
+                    temp_dir = make_temp_dir()
+                photo = msg.photo[-1]
+                tg_file = await self._app.bot.get_file(photo.file_id)
+                dest = temp_dir / f"photo_{len(items)}.jpg"
+                await tg_file.download_to_drive(str(dest))
+                items.append(dest)
+
+            # Image documents (e.g. files sent as "file" not compressed photo)
+            if msg.document and msg.document.mime_type and msg.document.mime_type.startswith("image/"):
+                if temp_dir is None:
+                    temp_dir = make_temp_dir()
+                ext = msg.document.file_name.rsplit(".", 1)[-1] if msg.document.file_name else "jpg"
+                tg_file = await self._app.bot.get_file(msg.document.file_id)
+                dest = temp_dir / f"doc_{len(items)}.{ext}"
+                await tg_file.download_to_drive(str(dest))
+                items.append(dest)
+
+        except Exception as e:
+            logger.warning("Telegram attachment download failed: {}", e)
+
+        return items
 
     # ------------------------------------------------------------------
     # Typing indicator
@@ -261,7 +326,7 @@ class TelegramChannel(BaseChannel):
     # ------------------------------------------------------------------
 
     async def _react(self, chat_id: int, message_id: int, emoji: str) -> None:
-        """Add an emoji reaction to a message (Bot API 7.0+, best-effort)."""
+        """Set an emoji reaction on a message (Bot API 7.0+, best-effort)."""
         if not self._app:
             return
         try:
@@ -273,6 +338,19 @@ class TelegramChannel(BaseChannel):
             )
         except Exception as e:
             logger.debug("Telegram reaction failed ({}): {}", emoji, e)
+
+    async def _clear_react(self, chat_id: int, message_id: int) -> None:
+        """Remove all reactions from a message (empty list = clear)."""
+        if not self._app:
+            return
+        try:
+            await self._app.bot.set_message_reaction(
+                chat_id=chat_id,
+                message_id=message_id,
+                reaction=[],
+            )
+        except Exception as e:
+            logger.debug("Telegram clear reaction failed: {}", e)
 
     # ------------------------------------------------------------------
     # Send helpers
@@ -317,6 +395,20 @@ class TelegramChannel(BaseChannel):
             except Exception:
                 pass
             await self._send_text(chat_id, chunk)
+
+    async def send_image(self, path: "Path") -> None:  # type: ignore[override]
+        """Send a local image file to the most recently active chat."""
+        # We store the current chat_id as a thread-local context via _active_chat_id.
+        chat_id = getattr(self, "_active_chat_id", None)
+        if not chat_id or not self._app:
+            logger.warning("Telegram send_image: no active chat_id, dropping {}", path)
+            return
+        try:
+            with open(path, "rb") as f:
+                await self._app.bot.send_photo(chat_id=int(chat_id), photo=f)
+            logger.info("Telegram image sent chat={} path={}", chat_id, path)
+        except Exception as e:
+            logger.error("Telegram send_photo failed {}: {}", path, e)
 
     async def _on_error(self, update: object, context: "ContextTypes.DEFAULT_TYPE") -> None:
         logger.error("Telegram error: {}", context.error)
