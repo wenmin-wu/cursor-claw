@@ -4,7 +4,7 @@ Turn your [Cursor](https://www.cursor.com/) editor into an [openclaw](https://gi
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.10+
 - [Cursor](https://www.cursor.com/) with the `agent` CLI available in your `PATH`
 - A Mattermost server with a bot account and token
 

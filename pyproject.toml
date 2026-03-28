@@ -5,7 +5,7 @@ description = "Turn your Cursor into an openclaw-like Mattermost agent — curso
 authors = [
     { name = "wenmin-wu", email = "wuwenmin1991@gmail.com" },
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "loguru>=0.7.3,<1.0.0",
     "mattermostautodriver>=11.5.1,<12.0.0",
@@ -38,4 +38,4 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py310"
