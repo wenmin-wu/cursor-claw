@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 
 from loguru import logger
 
@@ -223,7 +224,7 @@ class TelegramChannel(BaseChannel):
                 await self._run_turn_safe(
                     session_key=session_key,
                     prompt_text=text,
-                    on_flush=lambda chunk: self._send_text(int(chat_id), chunk),
+                    on_flush=lambda chunk: self._send_with_streaming(int(chat_id), chunk),
                     on_error=lambda msg: self._send_text(int(chat_id), msg),
                 )
             finally:
@@ -278,10 +279,10 @@ class TelegramChannel(BaseChannel):
     # ------------------------------------------------------------------
 
     async def _send_text(self, chat_id: int, text: str) -> None:
+        """Send text as a plain Telegram message with markdown→HTML and plain-text fallback."""
         if not self._app:
             return
-        max_chars = self.cfg.max_message_chars
-        for chunk in _split(text, max_chars):
+        for chunk in _split(text, self.cfg.max_message_chars):
             try:
                 html = _md_to_html(chunk)
                 await self._app.bot.send_message(chat_id=chat_id, text=html, parse_mode="HTML")
@@ -290,6 +291,32 @@ class TelegramChannel(BaseChannel):
                     await self._app.bot.send_message(chat_id=chat_id, text=chunk)
                 except Exception as e:
                     logger.error("Telegram send failed: {}", e)
+
+    async def _send_with_streaming(self, chat_id: int, text: str) -> None:
+        """Animate text via sendMessageDraft (Bot API 9.3+), then persist with send_message.
+
+        Falls back to a plain send_message if the draft API is not available.
+        Each agent flush chunk is sent as its own message so that long responses
+        arrive in readable segments rather than one giant block.
+        """
+        if not self._app:
+            return
+        for chunk in _split(text, self.cfg.max_message_chars):
+            draft_fn = getattr(self._app.bot, "send_message_draft", None)
+            if draft_fn is None:
+                await self._send_text(chat_id, chunk)
+                continue
+            draft_id = int(time.time() * 1000) % (2**31)
+            try:
+                step = max(len(chunk) // 8, 40)
+                for i in range(step, len(chunk), step):
+                    await draft_fn(chat_id=chat_id, draft_id=draft_id, text=chunk[:i])
+                    await asyncio.sleep(0.04)
+                await draft_fn(chat_id=chat_id, draft_id=draft_id, text=chunk)
+                await asyncio.sleep(0.15)
+            except Exception:
+                pass
+            await self._send_text(chat_id, chunk)
 
     async def _on_error(self, update: object, context: "ContextTypes.DEFAULT_TYPE") -> None:
         logger.error("Telegram error: {}", context.error)

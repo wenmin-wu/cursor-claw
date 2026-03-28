@@ -103,6 +103,8 @@ class QQChannel(BaseChannel):
         except Exception as e:
             logger.error("QQ send failed: {}", e)
 
+    _NEW_COMMANDS = {"/new", "/新建", "新建对话"}
+
     async def _on_message(self, data: "C2CMessage") -> None:
         try:
             if data.id in self._processed_ids:
@@ -123,6 +125,14 @@ class QQChannel(BaseChannel):
 
             msg_id = data.id
             session_key = f"qq:{user_id}"
+
+            # /new command — reset session
+            if content.lower() in self._NEW_COMMANDS:
+                self.store.delete("cursor:chat_ids", session_key)
+                await self.send_reply(user_id, "已开始新对话。(New conversation started.)", msg_id)
+                logger.info("QQ /new session cleared for {}", user_id)
+                return
+
             logger.info("QQ message from {} len={}", user_id, len(content))
 
             async def _flush(chunk: str) -> None:
