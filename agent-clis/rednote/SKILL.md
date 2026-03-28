@@ -1,108 +1,175 @@
 # rednote-cli — Agent Skill
 
-You have access to `rednote-cli`, a tool for fetching and searching Xiaohongshu (小红书 / RedNote) notes locally.
+You have access to `rednote-cli` (the PyPI package by doliz), a full-featured
+Xiaohongshu (小红书 / RedNote) CLI that talks directly to the platform API.
 
-## How notes are stored
+## Installation
 
-Each fetched note is saved to a folder named by its 24-character hex ID:
-
-```
-<data_dir>/
-  69c3eb81000000002102d93c/
-    content.txt   ← title, author, tags, body text (UTF-8)
-    image_00.jpg  ← downloaded images
-    image_01.jpg
-    note.json     ← full metadata (JSON)
+```bash
+pipx install --python python3.12 rednote-cli
+# or
+pip install rednote-cli
 ```
 
-Default `data_dir`: `~/.local/share/rednote-cli/notes/`
-Config file: `~/.config/rednote-cli/config.json`
-SQLite index: `~/.local/share/rednote-cli/notes.db`
+First-time setup:
+
+```bash
+rednote-cli init runtime       # initialise runtime environment
+rednote-cli doctor run --format json   # verify dependencies
+rednote-cli account login      # authenticate (interactive browser flow)
+rednote-cli account status --format json   # confirm login
+```
+
+## Config for this workspace
+
+Read `config.json` in this directory for default values:
+
+```json
+{
+  "data_dir": "~/.local/share/rednote-cli/notes",
+  "default_account": "",
+  "default_size": 10,
+  "default_sort_by": "latest",
+  "default_note_type": "all"
+}
+```
+
+Save fetched notes to `<data_dir>/<note_id>/note.json` so you can reference them locally later.
 
 ## Commands
 
-### Fetch a note
+### Search notes on platform
 
 ```bash
-rednote-cli fetch "<url_or_share_text>"
+rednote-cli search note \
+  --keyword "健康食谱" \
+  --size 10 \
+  --sort-by latest \
+  --note-type image_text \
+  --format json
+
+# sort-by options: comprehensive | latest | most_liked | most_commented | most_favorited
+# note-type:       all | video | image_text
+# publish-time:    all | day | week | half_year
+# search-scope:    all | viewed | unviewed | following
 ```
 
-- Accepts full URLs (`https://www.xiaohongshu.com/explore/<id>`) or share text containing xhslink / xiaohongshu URLs
-- Opens the page via Chrome (must be running with `--remote-debugging-port=19327`)
-- Saves text + images to `<data_dir>/<note_id>/`
-- Indexes the note in local SQLite for future searches
-- Prints `note_dir` on success — read `content.txt` and image files from there
+### Fetch a specific note by ID
 
 ```bash
-# with JSON output for programmatic use
-rednote-cli fetch "<url>" --json
+rednote-cli note \
+  --note-id 69c3eb81000000002102d93c \
+  --format json
+
+# If you have xsec_token from a search result, pass it:
+rednote-cli note --note-id <id> --xsec-token <token> --xsec-source pc_search --format json
 ```
 
-### Search locally
+`xsec_source` values by context:
+
+| Context | xsec_source |
+|---|---|
+| Discovery feed | `pc_feed` |
+| Search results | `pc_search` |
+| User's saved/collect | `pc_collect` |
+| User's liked notes | `pc_like` |
+| User's own notes | `pc_user` |
+
+### Search users
 
 ```bash
-rednote-cli search --local "<keyword>"   # full-text search
-rednote-cli search ""                    # list all notes (newest first)
-rednote-cli search "健康食谱" --json     # JSON output
-rednote-cli search "穿搭" --limit 10
+rednote-cli search user --keyword "美食博主" --size 10 --format json
 ```
 
-### Show a note by ID
+### Fetch a user profile
 
 ```bash
-rednote-cli show 69c3eb81000000002102d93c
-rednote-cli show 69c3eb81000000002102d93c --json
+rednote-cli user --user-id <user_id> --format json
+rednote-cli user self --format json   # your own profile
 ```
 
-### List all indexed notes
+### Publish a note
 
 ```bash
-rednote-cli list
-rednote-cli list --limit 100 --json
+# Image note
+rednote-cli publish \
+  --target image \
+  --account <account_uid> \
+  --image-list "img1.jpg,img2.jpg" \
+  --title "标题" \
+  --content "正文" \
+  --tags "标签1,标签2" \
+  --format json
+
+# Video note
+rednote-cli publish \
+  --target video \
+  --account <account_uid> \
+  --video "video.mp4" \
+  --title "标题" \
+  --content "正文" \
+  --format json
+
+# Scheduled publish (RFC3339 timestamp)
+rednote-cli publish --target image --schedule-at "2026-04-01T10:00:00+08:00" ...
 ```
 
-### Configure
+## JSON input mode (`--input`)
+
+For agent automation, prefer piping JSON via `--input -`:
 
 ```bash
-rednote-cli config --show                          # view current config
-rednote-cli config --data-dir ~/my-notes           # change note storage dir
-rednote-cli config --cdp-port 9222                 # change Chrome debug port
-rednote-cli config --max-images 10                 # limit images per fetch
-rednote-cli config --storage-state ~/.xhs-auth.json  # Playwright auth cookies
+echo '{"keyword":"旅行","size":5,"sort_by":"latest"}' | \
+  rednote-cli --format json --trace-id req-001 search note --input -
+
+# From a file
+rednote-cli --format json --trace-id req-002 note --input payload.json
 ```
 
-## Workflow
+`--input` is supported by: `search note`, `search user`, `note`, `user`, `publish`.
 
-1. **User shares a RedNote link** → run `rednote-cli fetch "<url>"`
-2. **Read the saved content** → `cat <note_dir>/content.txt`
-3. **View images** → list files in `<note_dir>/` matching `image_*.jpg`
-4. **Search saved notes** → `rednote-cli search --local "<keyword>"`
-5. **Get full metadata** → `rednote-cli show <note_id> --json`
+## Saving notes locally
 
-## Reading content in your response
-
-After fetching, read the note content like this:
+After fetching a note, save it under `data_dir` for future reference:
 
 ```bash
-# Get the note_dir from fetch output, then:
-cat <note_dir>/content.txt
-ls <note_dir>/image_*.jpg 2>/dev/null
+NOTE_ID="69c3eb81000000002102d93c"
+DATA_DIR="$HOME/.local/share/rednote-cli/notes"
+mkdir -p "$DATA_DIR/$NOTE_ID"
+
+rednote-cli note --note-id "$NOTE_ID" --format json > "$DATA_DIR/$NOTE_ID/note.json"
 ```
 
-Images are plain JPEG/PNG files saved to disk — open or display them as needed.
-
-## Prerequisite: Chrome with remote debugging
+To list locally saved notes:
 
 ```bash
-# macOS
-open -a "Google Chrome" --args --remote-debugging-port=19327
-
-# Linux
-google-chrome --remote-debugging-port=19327 &
+ls ~/.local/share/rednote-cli/notes/
 ```
 
-You must be logged into Xiaohongshu in that Chrome instance. To persist login across restarts, save the storage state once and configure it:
+To read a saved note:
 
 ```bash
-rednote-cli config --storage-state ~/.xhs-auth.json
+cat ~/.local/share/rednote-cli/notes/<note_id>/note.json
+```
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Success |
+| `2` | Parameter error |
+| `3` | Auth error (run `account login` again) |
+| `4` | Rate-limited / risk control |
+| `5` | Internal error |
+| `6` | Timeout |
+| `7` | Missing dependency / not implemented |
+
+## Recommended agent call pattern
+
+```bash
+# Always use --format json and --trace-id for automation
+rednote-cli --format json --trace-id req-$(date +%s) search note \
+  --keyword "keyword" \
+  --size 10 \
+  --sort-by latest
 ```
