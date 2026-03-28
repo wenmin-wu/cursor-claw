@@ -1,0 +1,88 @@
+"""System context injection: loads AGENT.md, SOUL.md, MEMORY.md and wraps them in <system> tags.
+
+These files live in ~/.cursorclaw/workspace/ (the cursor-claw context directory).
+The agent receives the full absolute path of each file so it can reference or update them.
+"""
+
+from __future__ import annotations
+
+import platform
+from importlib.resources import files as pkg_files
+from pathlib import Path
+
+CONTEXT_FILES = ["AGENT.md", "SOUL.md", "MEMORY.md"]
+
+
+def sync_workspace_templates(context_dir: Path, *, silent: bool = False) -> list[str]:
+    """Copy bundled template files into context_dir, skipping files that already exist.
+
+    Returns a list of relative file names that were newly created.
+    """
+    context_dir.mkdir(parents=True, exist_ok=True)
+    added: list[str] = []
+    try:
+        tpl_pkg = pkg_files("cursor_claw") / "templates"
+    except Exception:
+        return added
+
+    for name in CONTEXT_FILES:
+        dest = context_dir / name
+        if dest.exists():
+            continue
+        try:
+            src = tpl_pkg / name
+            dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")  # type: ignore[arg-type]
+            added.append(name)
+        except Exception:
+            pass
+
+    if added and not silent:
+        for name in added:
+            print(f"  Created {context_dir / name}")
+    return added
+
+
+def build_system_block(context_dir: Path, workspace: Path | None = None) -> str:
+    """Build the <system>…</system> block from context markdown files.
+
+    Each file's absolute path is included in the section header so the agent
+    knows where to read or update them.  Returns an empty string if no files exist.
+    """
+    header_lines = [
+        "## cursor-claw Context",
+        f"OS: {'macOS' if platform.system() == 'Darwin' else platform.system()} {platform.machine()}",
+        f"Context directory: {context_dir.expanduser().resolve()}",
+    ]
+    if workspace is not None:
+        header_lines.append(f"Agent workspace: {workspace.expanduser().resolve()}")
+
+    header_lines += [
+        "",
+        "The files below define your identity, personality, and memory.",
+        "You MAY read and update MEMORY.md to persist important facts across conversations.",
+    ]
+
+    parts: list[str] = ["\n".join(header_lines)]
+
+    for filename in CONTEXT_FILES:
+        path = (context_dir / filename).expanduser().resolve()
+        if not path.exists():
+            continue
+        content = path.read_text(encoding="utf-8").strip()
+        if not content:
+            continue
+        parts.append(f"## {filename}\nPath: {path}\n\n{content}")
+
+    if len(parts) == 1:
+        return ""
+
+    body = "\n\n---\n\n".join(parts)
+    return f"<system>\n{body}\n</system>"
+
+
+def build_prompt(user_message: str, context_dir: Path, workspace: Path | None = None) -> str:
+    """Prepend the <system> context block to the user message, if any context files exist."""
+    block = build_system_block(context_dir, workspace=workspace)
+    if block:
+        return f"{block}\n\n{user_message}"
+    return user_message

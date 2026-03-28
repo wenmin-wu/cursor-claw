@@ -1,0 +1,38 @@
+[project]
+name = "cursor-claw"
+version = "0.1.0"
+description = "Turn your Cursor into an openclaw-like Mattermost agent — cursor-claw bridges Mattermost to the Cursor Agent CLI per thread."
+requires-python = ">=3.11"
+dependencies = [
+    "loguru>=0.7.3,<1.0.0",
+    "mattermostautodriver>=11.5.1,<12.0.0",
+    "pydantic>=2.12.0,<3.0.0",
+    "pydantic-settings>=2.12.0,<3.0.0",
+    "typer>=0.20.0,<1.0.0",
+]
+
+[project.scripts]
+cursorclaw = "cursor_claw.cli:app"
+cursor-claw = "cursor_claw.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cursor_claw"]
+include = ["cursor_claw/templates/*.md"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.0,<10.0.0",
+    "pytest-asyncio>=1.3.0,<2.0.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
